@@ -865,6 +865,7 @@ export async function runService(caller: RunCaller, args: RunArgs): Promise<RunR
       preferredChain: payChain,
       expectedPayTo: targetPayTo,
       siwxHint: target.authMode === "siwx" ? "siwx" : undefined,
+      payerUserId: caller.userId,
     });
   } catch (e) {
     await releaseReservation(ref, { reservedUsd: reserve.reservedUsd, status: "failed" });

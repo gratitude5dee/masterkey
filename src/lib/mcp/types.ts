@@ -47,6 +47,11 @@ export interface UserDoc {
   // Bundle Studio — slugs of bundles (curated or the user's own) this user has favorited (spec §1.7).
   // Stored inline (no extra collection); resolved against both curated + user bundles by slug.
   favoriteBundleSlugs?: string[];
+  // Per-user Sponge agent wallet (src/lib/wallet.ts seam). Only the agent id is stored — its API key is
+  // resolved from the platform master key at connect time and never persisted here.
+  sponge?: { agentId: string; createdISO: string };
+  // Partner identities (e.g. the airv2 control plane's users.id) that map onto this user.
+  externalIds?: { airv2?: string };
   createdISO: string;
   updatedISO: string;
 }

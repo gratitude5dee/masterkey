@@ -21,6 +21,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { detectSiwxChallenge, signSiwx, siwxAvailable } from "./siwx";
 import { sameAddress, recipientAllows } from "./spend/settlement-match";
+import { getUser, setUserSpongeAgent } from "./users";
 
 const USDC_DECIMALS = 6;
 
@@ -92,15 +93,35 @@ export function normalizeHeaderRecord(h: unknown): Record<string, string> | unde
   return Object.keys(out).length ? out : undefined;
 }
 
-// --- The single wallet seam -------------------------------------------------------------------
-// Cached singleton. Prefer a least-privilege agent key (SPONGE_API_KEY); otherwise resolve ONE master
-// agent from a master key (SPONGE_MASTER_KEY). Built so a future move to per-user agents needs no
-// caller change — callers only ever see `getMasterWallet()`.
+// --- The wallet seam --------------------------------------------------------------------------
+// Two payer identities live behind `getMasterWallet(payerUserId?)`:
+//   * platform master wallet (no `payerUserId`, or the user has no Sponge agent yet and per-user
+//     provisioning is off) — a least-privilege agent key (SPONGE_API_KEY) or ONE master agent resolved
+//     from SPONGE_MASTER_KEY.
+//   * per-user Sponge agent wallet — one Sponge agent per Masterkey user (`UserDoc.sponge.agentId`),
+//     created through `SpongePlatform.createAgent` under SPONGE_MASTER_KEY and connected with
+//     `connectAgent`. The user funds it (USDC on Base) from their own wallet; x402 charges for that
+//     user's runs are debited from it, so spend enforcement + the ledger (already keyed by userId /
+//     connectionId) line up with the wallet that actually paid.
+// Agent API keys are only ever held in server memory; nothing wallet-related leaves this module.
 
 const MASTER_AGENT_NAME = "masterkey-master";
 let _walletPromise: Promise<SpongeWallet> | undefined;
+let _platformPromise: Promise<SpongePlatform> | undefined;
+const _userWallets = new Map<string, Promise<SpongeWallet>>();
+const USER_WALLET_CACHE_MAX = 256;
 
-export function getMasterWallet(): Promise<SpongeWallet> {
+/** Per-user agent wallets are provisioned lazily when a master key is present (opt out with "0"). */
+function perUserWalletsEnabled(): boolean {
+  return !!process.env.SPONGE_MASTER_KEY && process.env.SPONGE_PER_USER_WALLETS !== "0";
+}
+
+/**
+ * The wallet that pays for `payerUserId` — that user's own Sponge agent when one exists (or can be
+ * provisioned), else the platform master wallet. Callers never touch keys.
+ */
+export function getMasterWallet(payerUserId?: string): Promise<SpongeWallet> {
+  if (payerUserId && perUserWalletsEnabled()) return getUserWallet(payerUserId);
   if (!_walletPromise) {
     _walletPromise = connectMasterWallet().catch((e) => {
       _walletPromise = undefined; // don't cache a failed connect — allow retry next call
@@ -108,6 +129,91 @@ export function getMasterWallet(): Promise<SpongeWallet> {
     });
   }
   return _walletPromise;
+}
+
+function getPlatform(): Promise<SpongePlatform> {
+  if (!_platformPromise) {
+    const masterKey = process.env.SPONGE_MASTER_KEY;
+    if (!masterKey) return Promise.reject(new Error("SPONGE_MASTER_KEY not configured"));
+    _platformPromise = SpongePlatform.connect({
+      apiKey: masterKey,
+      baseUrl: process.env.SPONGE_API_URL || undefined,
+    }).catch((e) => {
+      _platformPromise = undefined;
+      throw e;
+    });
+  }
+  return _platformPromise;
+}
+
+function userAgentName(userId: string): string {
+  return `masterkey-user:${userId}`;
+}
+
+export interface UserWalletInfo {
+  agentId: string;
+  /** Funding address per chain (lowercased EVM / base58 Solana), as reported by Sponge. */
+  addresses: Record<string, string>;
+}
+
+/**
+ * Ensure `userId` has its own Sponge agent wallet; returns its id + funding addresses. Idempotent:
+ * reuses `UserDoc.sponge.agentId`, then an existing agent by name, then creates one.
+ */
+export async function ensureUserWallet(userId: string): Promise<UserWalletInfo> {
+  const platform = await getPlatform();
+  const user = await getUser(userId);
+  if (!user) throw new Error(`ensureUserWallet: unknown user ${userId}`);
+  let agentId = user.sponge?.agentId;
+  if (!agentId) {
+    const name = userAgentName(userId);
+    const existing = (await platform.listAgents()).find((a) => a.name === name);
+    if (existing) {
+      agentId = existing.id;
+    } else {
+      const created = await platform.createAgent({
+        name,
+        description: `Masterkey per-user wallet (${userId})`,
+      });
+      agentId = created.agent.id;
+    }
+    await setUserSpongeAgent(userId, agentId);
+    _userWallets.delete(userId);
+  }
+  const wallet = await getUserWallet(userId);
+  const addresses = await wallet.getAddresses();
+  return { agentId, addresses: { ...addresses } };
+}
+
+async function getUserWallet(userId: string): Promise<SpongeWallet> {
+  let p = _userWallets.get(userId);
+  if (!p) {
+    if (_userWallets.size >= USER_WALLET_CACHE_MAX) {
+      const oldest = _userWallets.keys().next().value;
+      if (oldest !== undefined) _userWallets.delete(oldest);
+    }
+    p = connectUserWallet(userId).catch((e) => {
+      _userWallets.delete(userId);
+      throw e;
+    });
+    _userWallets.set(userId, p);
+  }
+  return p;
+}
+
+async function connectUserWallet(userId: string): Promise<SpongeWallet> {
+  const user = await getUser(userId);
+  if (!user) throw new WalletPaymentError(`unknown payer ${userId}`, "unknown_payer");
+  if (!user.sponge?.agentId) {
+    // First paid call provisions the agent; the wallet starts empty until the user funds it.
+    await ensureUserWallet(userId);
+    return getUserWallet(userId);
+  }
+  const platform = await getPlatform();
+  const agentId = user.sponge.agentId;
+  const agentKey =
+    (await platform.getAgentApiKey(agentId)) ?? (await platform.regenerateAgentApiKey(agentId));
+  return platform.connectAgent({ apiKey: agentKey, agentId });
 }
 
 async function connectMasterWallet(): Promise<SpongeWallet> {
@@ -128,7 +234,7 @@ async function connectMasterWallet(): Promise<SpongeWallet> {
 
   const masterKey = process.env.SPONGE_MASTER_KEY;
   if (masterKey) {
-    const platform = await SpongePlatform.connect({ apiKey: masterKey, baseUrl });
+    const platform = await getPlatform();
     const agents = await platform.listAgents();
     let agent = agents.find((a) => a.name === MASTER_AGENT_NAME) ?? agents[0];
     let agentKey: string | null;
@@ -165,6 +271,8 @@ export async function payProvider(opts: {
    *  some other non-2xx (e.g. a dead orbis slug that 404s unpaid), DO NOT attempt payment — paying it
    *  just loses money. Used by Registry QA ("confirm 402, then pay"). */
   requireChallenge?: boolean;
+  /** Masterkey user whose own Sponge agent wallet pays (see the wallet seam). Omitted → master wallet. */
+  payerUserId?: string;
   /** The provider's x402 `payTo` for the chain we expect to pay on (from the registry's
    *  `payment.accepts[]`). Binds a recovered/reported settlement to THIS provider so a charge can never
    *  claim a different provider's same-amount transaction. Optional — omitted = amount+chain matching only. */
@@ -279,7 +387,7 @@ export async function payProvider(opts: {
   }
 
   // 2) Pay via Sponge (with the SIWX header if we signed one).
-  const wallet = await getMasterWallet();
+  const wallet = await getMasterWallet(opts.payerUserId);
   const chain = toSpongeChain(opts.preferredChain);
   let resp: unknown;
   try {
@@ -476,13 +584,14 @@ export async function listSettlementCandidates(
   network: string,
   expectedPayTo?: string,
   withinMs = 60 * 60_000,
+  payerUserId?: string,
 ): Promise<string[]> {
   if (!(costUsd > 0)) return [];
   const chain = toSpongeChain(network);
   if (!chain) return [];
   let rows: unknown;
   try {
-    const wallet = await getMasterWallet();
+    const wallet = await getMasterWallet(payerUserId);
     rows = await wallet.getTransactionHistoryDetailed({ limit: 50 });
   } catch {
     return [];

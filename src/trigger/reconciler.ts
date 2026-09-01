@@ -99,7 +99,7 @@ export async function reconcileUnconfirmed(
         // reconciliation → distinct same-amount rows get distinct txs (vs the synchronous pay-time
         // recovery, which bails on bursts). The payTo filter keeps a burst from crossing providers.
         // Verified on-chain below before counting.
-        const cands = await listSettlementCandidates(row.costUsd, row.network, row.payTo);
+        const cands = await listSettlementCandidates(row.costUsd, row.network, row.payTo, undefined, row.userId);
         if (cands.length) {
           const claimed = await claimedTxHashes(cands);
           txHash = cands.find((h) => !claimed.has(h));
