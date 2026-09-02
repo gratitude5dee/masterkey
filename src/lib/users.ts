@@ -4,7 +4,7 @@
 
 import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
-import { COLLECTIONS, type UserDoc } from "@/lib/mcp/types";
+import { COLLECTIONS, type ConnectionDoc, type TokenDoc, type UserDoc } from "@/lib/mcp/types";
 import { ensureIndexes } from "@/lib/mcp/indexes";
 
 function nowISO(): string {
@@ -155,9 +155,24 @@ export async function upsertUserByAirv2Id(input: {
   await ensureIndexes();
   const db = await getDb();
   const users = db.collection<UserDoc>(COLLECTIONS.users);
-  const existing = await users.findOne({ "externalIds.airv2": input.airv2UserId });
-  if (existing) return existing;
   const walletAddress = `airv2:${input.airv2UserId}`.toLowerCase();
+  const existing = await users.findOne({ "externalIds.airv2": input.airv2UserId });
+  if (existing) {
+    if (existing.walletAddress === walletAddress) return existing;
+    // A link that points at a wallet-authed account (created by the removed wallet_address path) must
+    // not keep granting the partner tokens for it — detach it, kill every outstanding airv2 token and
+    // the airv2 connection on that account, and fall through to the synthetic account.
+    await users.updateOne(
+      { _id: existing._id, "externalIds.airv2": input.airv2UserId },
+      { $unset: { "externalIds.airv2": "" }, $set: { updatedISO: nowISO() } },
+    );
+    await db
+      .collection<TokenDoc>(COLLECTIONS.tokens)
+      .updateMany({ userId: existing._id, clientId: "airv2", revoked: false }, { $set: { revoked: true } });
+    await db
+      .collection<ConnectionDoc>(COLLECTIONS.connections)
+      .updateMany({ userId: existing._id, client: "airv2" }, { $set: { status: "revoked" } });
+  }
   const result = await users.findOneAndUpdate(
     { walletAddress },
     {

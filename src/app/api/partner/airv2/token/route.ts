@@ -5,6 +5,8 @@
 //
 // Body: { external_user_id, email?, monthly_cap_usd?, per_call_max_usd? } — no wallet_address:
 // a partner-supplied wallet must never select an existing wallet-authed Masterkey account.
+// monthly_cap_usd must be a non-negative number (monthlyLimitUsd has no unlimited state);
+// per_call_max_usd additionally accepts null to clear the per-call cap.
 // 200:  { access_token, token_type: "Bearer", expires_in, connection_id, user_id,
 //         wallet: { agent_id, addresses } | null }
 
@@ -38,13 +40,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "external_user_id must be a uuid" }, { status: 400 });
   }
   const email = typeof body.email === "string" ? body.email : null;
-  const monthlyCapUsd = optCap(body.monthly_cap_usd);
+  const monthlyRaw = optCap(body.monthly_cap_usd);
+  const monthlyCapUsd = typeof monthlyRaw === "number" ? monthlyRaw : undefined;
   const perCallMaxUsd = optCap(body.per_call_max_usd);
-  if (
-    (body.monthly_cap_usd !== undefined && monthlyCapUsd === undefined) ||
-    (body.per_call_max_usd !== undefined && perCallMaxUsd === undefined)
-  ) {
-    return NextResponse.json({ error: "caps must be non-negative numbers or null" }, { status: 400 });
+  if (body.monthly_cap_usd !== undefined && monthlyCapUsd === undefined) {
+    return NextResponse.json({ error: "monthly_cap_usd must be a non-negative number" }, { status: 400 });
+  }
+  if (body.per_call_max_usd !== undefined && perCallMaxUsd === undefined) {
+    return NextResponse.json({ error: "per_call_max_usd must be a non-negative number or null" }, { status: 400 });
   }
 
   const link = await linkAirv2User({
