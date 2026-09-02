@@ -124,7 +124,7 @@ async function provisionAgentmailInbox(userId: string, connectionId: string): Pr
 
   let pay;
   try {
-    pay = await payProvider({ url, method: "POST", body: { display_name: "Masterkey" }, maxValueUsd: reserve.maxValueUsd });
+    pay = await payProvider({ url, method: "POST", body: { display_name: "Masterkey" }, maxValueUsd: reserve.maxValueUsd, payerUserId: userId });
   } catch (e) {
     await releaseReservation(ref, { reservedUsd: reserve.reservedUsd, status: "failed" });
     if (e instanceof PaymentExceededError) {

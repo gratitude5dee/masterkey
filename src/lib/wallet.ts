@@ -21,7 +21,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { detectSiwxChallenge, signSiwx, siwxAvailable } from "./siwx";
 import { sameAddress, recipientAllows } from "./spend/settlement-match";
-import { getUser, setUserSpongeAgent } from "./users";
+import { getUser, claimUserSpongeAgent } from "./users";
 
 const USDC_DECIMALS = 6;
 
@@ -177,7 +177,7 @@ export async function ensureUserWallet(userId: string): Promise<UserWalletInfo> 
       });
       agentId = created.agent.id;
     }
-    await setUserSpongeAgent(userId, agentId);
+    agentId = await claimUserSpongeAgent(userId, agentId);
     _userWallets.delete(userId);
   }
   const wallet = await getUserWallet(userId);
