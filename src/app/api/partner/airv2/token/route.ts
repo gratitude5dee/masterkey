@@ -18,7 +18,11 @@ export const dynamic = "force-dynamic";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Optional non-negative USD cap: null clears it; 0 is a real "block all paid calls" cap. */
+/**
+ * Optional non-negative USD cap; 0 is a real "block all paid calls" cap.
+ * null passes through so the caller decides: per-call treats it as "clear the
+ * cap", monthly rejects it (there is no unlimited monthly state).
+ */
 function optCap(v: unknown): number | null | undefined {
   if (v === undefined) return undefined;
   if (v === null) return null;
