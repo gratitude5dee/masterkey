@@ -3,7 +3,8 @@
 // that user's own Masterkey account + per-user Sponge wallet. airv2 attaches the token to /mcp
 // requests it proxies for the user's agent; the token is never handed to the agent's box.
 //
-// Body: { external_user_id, wallet_address?, email?, monthly_cap_usd?, per_call_max_usd? }
+// Body: { external_user_id, email?, monthly_cap_usd?, per_call_max_usd? } — no wallet_address:
+// a partner-supplied wallet must never select an existing wallet-authed Masterkey account.
 // 200:  { access_token, token_type: "Bearer", expires_in, connection_id, user_id,
 //         wallet: { agent_id, addresses } | null }
 
@@ -15,10 +16,11 @@ export const dynamic = "force-dynamic";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function optNumber(v: unknown): number | null | undefined {
+/** Optional non-negative USD cap: null clears it; 0 is a real "block all paid calls" cap. */
+function optCap(v: unknown): number | null | undefined {
   if (v === undefined) return undefined;
   if (v === null) return null;
-  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
 }
 
 export async function POST(req: Request) {
@@ -35,18 +37,21 @@ export async function POST(req: Request) {
   if (typeof externalUserId !== "string" || !UUID_RE.test(externalUserId)) {
     return NextResponse.json({ error: "external_user_id must be a uuid" }, { status: 400 });
   }
-  const walletAddress =
-    typeof body.wallet_address === "string" && /^0x[0-9a-f]{40}$/i.test(body.wallet_address)
-      ? body.wallet_address
-      : null;
   const email = typeof body.email === "string" ? body.email : null;
+  const monthlyCapUsd = optCap(body.monthly_cap_usd);
+  const perCallMaxUsd = optCap(body.per_call_max_usd);
+  if (
+    (body.monthly_cap_usd !== undefined && monthlyCapUsd === undefined) ||
+    (body.per_call_max_usd !== undefined && perCallMaxUsd === undefined)
+  ) {
+    return NextResponse.json({ error: "caps must be non-negative numbers or null" }, { status: 400 });
+  }
 
   const link = await linkAirv2User({
     airv2UserId: externalUserId,
-    walletAddress,
     email,
-    monthlyCapUsd: optNumber(body.monthly_cap_usd),
-    perCallMaxUsd: optNumber(body.per_call_max_usd),
+    monthlyCapUsd,
+    perCallMaxUsd,
   });
   return NextResponse.json(
     {

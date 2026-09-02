@@ -121,23 +121,35 @@ export async function updateSpendSettings(
   await db.collection<UserDoc>(COLLECTIONS.users).updateOne({ _id: id }, { $set: set });
 }
 
-/** Record the user's per-user Sponge agent (wallet seam). Only the agent id — never a key. */
-export async function setUserSpongeAgent(id: string, agentId: string): Promise<void> {
+/**
+ * Record the user's per-user Sponge agent (wallet seam). Only the agent id — never a key.
+ * Atomic first-writer-wins claim: only sets when no agent is stored yet, and always returns the
+ * agent that ends up on the user, so concurrent provisioners converge on one wallet (funds are
+ * only ever sent to the stored agent's address).
+ */
+export async function claimUserSpongeAgent(id: string, agentId: string): Promise<string> {
   const db = await getDb();
-  await db
-    .collection<UserDoc>(COLLECTIONS.users)
-    .updateOne({ _id: id }, { $set: { sponge: { agentId, createdISO: nowISO() }, updatedISO: nowISO() } });
+  const users = db.collection<UserDoc>(COLLECTIONS.users);
+  const claimed = await users.findOneAndUpdate(
+    { _id: id, "sponge.agentId": { $exists: false } },
+    { $set: { sponge: { agentId, createdISO: nowISO() }, updatedISO: nowISO() } },
+    { returnDocument: "after" },
+  );
+  if (claimed?.sponge?.agentId) return claimed.sponge.agentId;
+  const current = await users.findOne({ _id: id });
+  const winner = current?.sponge?.agentId;
+  if (!winner) throw new Error(`claimUserSpongeAgent: no stored agent for ${id}`);
+  return winner;
 }
 
 /**
- * Find-or-create the Masterkey user for an airv2 control-plane user. Keyed by `externalIds.airv2`;
- * on first sight the row is created under the user's own wallet address when airv2 knows it
- * (so a later CDP sign-in with that wallet lands on the same account), else under a synthetic
- * `airv2:<id>` key that no real EOA can collide with.
+ * Find-or-create the Masterkey user for an airv2 control-plane user. Keyed by `externalIds.airv2`,
+ * always under a synthetic `airv2:<id>` wallet key that no real EOA can collide with — a
+ * partner-supplied wallet address must never select (and thereby grant tokens for) an existing
+ * wallet-authed account, since the partner cannot prove ownership of that wallet here.
  */
 export async function upsertUserByAirv2Id(input: {
   airv2UserId: string;
-  walletAddress?: string | null;
   email?: string | null;
 }): Promise<UserDoc> {
   await ensureIndexes();
@@ -145,7 +157,7 @@ export async function upsertUserByAirv2Id(input: {
   const users = db.collection<UserDoc>(COLLECTIONS.users);
   const existing = await users.findOne({ "externalIds.airv2": input.airv2UserId });
   if (existing) return existing;
-  const walletAddress = (input.walletAddress || `airv2:${input.airv2UserId}`).toLowerCase();
+  const walletAddress = `airv2:${input.airv2UserId}`.toLowerCase();
   const result = await users.findOneAndUpdate(
     { walletAddress },
     {

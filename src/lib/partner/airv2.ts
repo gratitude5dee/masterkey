@@ -28,7 +28,6 @@ export function verifyPartnerSecret(authorization: string | null): boolean {
 
 export interface Airv2LinkInput {
   airv2UserId: string;
-  walletAddress?: string | null;
   email?: string | null;
   monthlyCapUsd?: number | null;
   perCallMaxUsd?: number | null;
@@ -44,7 +43,6 @@ export interface Airv2Link {
 export async function linkAirv2User(input: Airv2LinkInput): Promise<Airv2Link> {
   const user = await upsertUserByAirv2Id({
     airv2UserId: input.airv2UserId,
-    walletAddress: input.walletAddress,
     email: input.email,
   });
   const patch: Partial<UserDoc["spend"]> = {};
@@ -52,8 +50,9 @@ export async function linkAirv2User(input: Airv2LinkInput): Promise<Airv2Link> {
     patch.monthlyLimitUsd = input.monthlyCapUsd;
   }
   if (input.perCallMaxUsd !== undefined) {
+    // null clears the cap (unlimited); 0 is a real cap that blocks every paid call.
     patch.perCallMaxUsd =
-      typeof input.perCallMaxUsd === "number" && input.perCallMaxUsd > 0 ? input.perCallMaxUsd : null;
+      typeof input.perCallMaxUsd === "number" && input.perCallMaxUsd >= 0 ? input.perCallMaxUsd : null;
   }
   if (Object.keys(patch).length) await updateSpendSettings(user._id, patch);
 

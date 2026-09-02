@@ -129,6 +129,7 @@ async function runHttpPoll(
   url: string,
   http: PollHttp,
   ceiling: number,
+  payerUserId: string,
   expectedPayTo?: string,
 ): Promise<PayResult | undefined> {
   if (cost === "free") return plainGet(url, http);
@@ -136,7 +137,7 @@ async function runHttpPoll(
   // per-poll OR uncurated (undefined): try paid; uncurated falls back to a SIWX attempt.
   let pay: PayResult | undefined;
   try {
-    pay = await payProvider({ url, method: http.method, headers: http.headers, body: http.body, maxValueUsd: ceiling, expectedPayTo });
+    pay = await payProvider({ url, method: http.method, headers: http.headers, body: http.body, maxValueUsd: ceiling, expectedPayTo, payerUserId });
   } catch {
     pay = undefined;
   }
@@ -178,7 +179,7 @@ export async function fetchSeparateResult(job: JobDoc): Promise<PayResult | unde
     headers: resolvePollHeaders(a?.poll?.resultHeaders, job.providerJobId),
   };
   const cost: PollCost = a?.poll?.resultCost ?? "free"; // result fetch is FREE unless the registry says otherwise
-  return runHttpPoll(cost, resolved, http, pollCeiling(job.priceUsd), job.payTo);
+  return runHttpPoll(cost, resolved, http, pollCeiling(job.priceUsd), job.userId, job.payTo);
 }
 
 /**
@@ -215,7 +216,7 @@ export async function pollJobOnce(job: JobDoc): Promise<PollOutcome> {
   // X-Payment-Response receipt → the receipt-only settlement gate books the charge exactly once). The ceiling is
   // sized from job.priceUsd (the registry price at submit — endpoint data, NOT a spend policy); the user's spend
   // limits (checked at reserve time) are the real money guardrail, with POLL_MAX_USD as the env backstop.
-  const pay = await runHttpPoll(pollCost, job.pollUrl, http, pollCeiling(job.priceUsd), job.payTo);
+  const pay = await runHttpPoll(pollCost, job.pollUrl, http, pollCeiling(job.priceUsd), job.userId, job.payTo);
 
   if (!pay) return { state: "pending", costUsd: 0 }; // pollCount already advanced by the claim
 
