@@ -31,10 +31,22 @@ export interface FirstPartyToken {
  * refinement requires explicit opt-in for those buckets.
  */
 export async function mintFirstPartyToken(userId: string): Promise<FirstPartyToken> {
+  return mintSystemToken(userId, { clientId: WEB_CLIENT_ID, name: "Masterkey Web" });
+}
+
+/**
+ * Same shape for other trusted server-side callers (e.g. the airv2 control-plane proxy, clientId
+ * "airv2"): one system connection per (user, client), a hashed audience-bound access token.
+ */
+export async function mintSystemToken(
+  userId: string,
+  opts: { clientId: string; name: string; ttlSec?: number },
+): Promise<FirstPartyToken> {
+  const ttlSec = opts.ttlSec ?? WEB_TOKEN_TTL_SEC;
   const conn = await upsertConnection({
     userId,
-    clientId: WEB_CLIENT_ID,
-    name: "Masterkey Web",
+    clientId: opts.clientId,
+    name: opts.name,
     scopes: ["all"],
   });
 
@@ -45,14 +57,14 @@ export async function mintFirstPartyToken(userId: string): Promise<FirstPartyTok
     type: "access",
     hashedToken: hashToken(accessToken), // never store raw
     userId,
-    clientId: WEB_CLIENT_ID,
+    clientId: opts.clientId,
     connectionId: conn._id,
     scope: DEFAULT_SCOPE, // "mcp:read mcp:run"
     audience: MCP_RESOURCE_URL, // R1: verifyMcpToken rejects a mismatch
     revoked: false,
     createdISO: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + WEB_TOKEN_TTL_SEC * 1000),
+    expiresAt: new Date(Date.now() + ttlSec * 1000),
   });
 
-  return { token: accessToken, connectionId: conn._id, expiresInSec: WEB_TOKEN_TTL_SEC };
+  return { token: accessToken, connectionId: conn._id, expiresInSec: ttlSec };
 }

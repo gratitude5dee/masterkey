@@ -120,3 +120,45 @@ export async function updateSpendSettings(
   for (const [k, v] of Object.entries(patch)) set[`spend.${k}`] = v;
   await db.collection<UserDoc>(COLLECTIONS.users).updateOne({ _id: id }, { $set: set });
 }
+
+/** Record the user's per-user Sponge agent (wallet seam). Only the agent id — never a key. */
+export async function setUserSpongeAgent(id: string, agentId: string): Promise<void> {
+  const db = await getDb();
+  await db
+    .collection<UserDoc>(COLLECTIONS.users)
+    .updateOne({ _id: id }, { $set: { sponge: { agentId, createdISO: nowISO() }, updatedISO: nowISO() } });
+}
+
+/**
+ * Find-or-create the Masterkey user for an airv2 control-plane user. Keyed by `externalIds.airv2`;
+ * on first sight the row is created under the user's own wallet address when airv2 knows it
+ * (so a later CDP sign-in with that wallet lands on the same account), else under a synthetic
+ * `airv2:<id>` key that no real EOA can collide with.
+ */
+export async function upsertUserByAirv2Id(input: {
+  airv2UserId: string;
+  walletAddress?: string | null;
+  email?: string | null;
+}): Promise<UserDoc> {
+  await ensureIndexes();
+  const db = await getDb();
+  const users = db.collection<UserDoc>(COLLECTIONS.users);
+  const existing = await users.findOne({ "externalIds.airv2": input.airv2UserId });
+  if (existing) return existing;
+  const walletAddress = (input.walletAddress || `airv2:${input.airv2UserId}`).toLowerCase();
+  const result = await users.findOneAndUpdate(
+    { walletAddress },
+    {
+      $set: { "externalIds.airv2": input.airv2UserId, updatedISO: nowISO() },
+      $setOnInsert: {
+        _id: newUserId(),
+        email: input.email ?? null,
+        ...seedDefaults(input.email ?? null),
+        createdISO: nowISO(),
+      },
+    },
+    { upsert: true, returnDocument: "after" },
+  );
+  if (!result) throw new Error("upsertUserByAirv2Id failed to return a user");
+  return result;
+}

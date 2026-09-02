@@ -11,6 +11,11 @@ async function create(): Promise<void> {
   await Promise.all([
     // users — one per wallet
     db.collection(COLLECTIONS.users).createIndex({ walletAddress: 1 }, { unique: true }),
+    // partner identity (airv2 users.id) → one Masterkey user
+    db.collection(COLLECTIONS.users).createIndex(
+      { "externalIds.airv2": 1 },
+      { unique: true, partialFilterExpression: { "externalIds.airv2": { $type: "string" } } },
+    ),
     // connections — by user, and dedupe key (client + user) for upsert (R5)
     db.collection(COLLECTIONS.connections).createIndex({ userId: 1 }),
     db.collection(COLLECTIONS.connections).createIndex({ client: 1, userId: 1 }),
