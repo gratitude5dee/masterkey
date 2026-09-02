@@ -155,9 +155,17 @@ export async function upsertUserByAirv2Id(input: {
   await ensureIndexes();
   const db = await getDb();
   const users = db.collection<UserDoc>(COLLECTIONS.users);
-  const existing = await users.findOne({ "externalIds.airv2": input.airv2UserId });
-  if (existing) return existing;
   const walletAddress = `airv2:${input.airv2UserId}`.toLowerCase();
+  const existing = await users.findOne({ "externalIds.airv2": input.airv2UserId });
+  if (existing) {
+    if (existing.walletAddress === walletAddress) return existing;
+    // A link that points at a wallet-authed account (created by the removed wallet_address path) must
+    // not keep granting the partner tokens for it — detach it and fall through to the synthetic account.
+    await users.updateOne(
+      { _id: existing._id, "externalIds.airv2": input.airv2UserId },
+      { $unset: { "externalIds.airv2": "" }, $set: { updatedISO: nowISO() } },
+    );
+  }
   const result = await users.findOneAndUpdate(
     { walletAddress },
     {
