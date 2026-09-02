@@ -171,7 +171,7 @@ export async function upsertUserByAirv2Id(input: {
       .updateMany({ userId: existing._id, clientId: "airv2", revoked: false }, { $set: { revoked: true } });
     await db
       .collection<ConnectionDoc>(COLLECTIONS.connections)
-      .updateMany({ userId: existing._id, clientId: "airv2" }, { $set: { status: "revoked" } });
+      .updateMany({ userId: existing._id, client: "airv2" }, { $set: { status: "revoked" } });
   }
   const result = await users.findOneAndUpdate(
     { walletAddress },
