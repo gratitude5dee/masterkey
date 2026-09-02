@@ -29,7 +29,8 @@ export function verifyPartnerSecret(authorization: string | null): boolean {
 export interface Airv2LinkInput {
   airv2UserId: string;
   email?: string | null;
-  monthlyCapUsd?: number | null;
+  /** Non-negative; there is no null/unlimited state for the monthly limit. */
+  monthlyCapUsd?: number;
   perCallMaxUsd?: number | null;
 }
 
